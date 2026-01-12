@@ -1,0 +1,65 @@
+{
+  "realm": "cinema",
+  "enabled": true,
+  "roles": {
+    "realm": [
+      { "name": "MOVIE_CHECK" },
+      { "name": "REGISTERED_WATCHER" },
+      { "name": "BOOKING_ADMIN" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "booking-service",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "booking-secret-please-change",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": []
+    },
+    {
+      "clientId": "frontend-app",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:3000/*"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "watcher",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "w",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "REGISTERED_WATCHER"
+      ]
+    },
+    {
+      "username": "employee",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "e",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "BOOKING_ADMIN"
+      ]
+    }
+  ]
+}
