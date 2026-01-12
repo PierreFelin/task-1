@@ -1,0 +1,166 @@
+version: "3.8"
+
+services:
+
+  # ---------- Keycloak (imports realm) ----------
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+    command: ["start-dev","--import-realm"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak/realms:/opt/keycloak/data/import:ro
+      - keycloak_data:/opt/keycloak/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/realms/master/.well-known/openid-configuration || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 40
+
+  # helper that calls Keycloak admin API to assign service-account role
+  keycloak-init:
+    image: alpine:3.18
+    depends_on:
+      - keycloak
+    volumes:
+      - ./keycloak/init:/opt/keycloak-init:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "apk add --no-cache curl jq >/dev/null 2>&1 &&
+       /opt/keycloak-init/assign-service-account-role.sh"
+
+  # ---------- MongoDB ----------
+  mongo:
+    image: mongo:6.0
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      # expose to host on 27018 so it won't clash with local 27017/27015
+      - "27018:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---------- Eureka / Discovery Server ----------
+  discovery:
+    image: yourorg/discovery-server:latest
+    build: ./discovery # optional if you have a Dockerfile
+    environment:
+      - SPRING_APPLICATION_NAME=discovery
+      - EUREKA_INSTANCE_HOSTNAME=discovery
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8761/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---------- Config Server (reads from Git repo) ----------
+  config-server:
+    image: yourorg/config-server:latest
+    build: ./config-server
+    environment:
+      - SPRING_APPLICATION_NAME=config-server
+      # Replace with your Git repository that contains config files for movie-service, booking-service, gateway, etc.
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=https://github.com/yourorg/your-config-repo.git
+      - SPRING_PROFILES_ACTIVE=native # optional — depending on config server setup
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery:8761/eureka/
+    ports:
+      - "8888:8888"
+    depends_on:
+      - discovery
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8888/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---------- API Gateway ----------
+  gateway:
+    image: yourorg/gateway:latest
+    build: ./gateway
+    environment:
+      - SPRING_APPLICATION_NAME=gateway
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery:8761/eureka/
+    depends_on:
+      - discovery
+      - config-server
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # ---------- Movie Service ----------
+  movie-service:
+    image: yourorg/movie-service:latest
+    build: ./movie-service
+    environment:
+      - SPRING_APPLICATION_NAME=movie-service
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery:8761/eureka/
+      - SPRING_DATA_MONGODB_URI=mongodb://mongo:27017/moviesdb
+    depends_on:
+      - discovery
+      - config-server
+      - mongo
+    volumes:
+      - ./entrypoints:/opt/entrypoints:ro
+    entrypoint: ["/bin/sh","-c","/opt/entrypoints/wait-for-mongo-config-eureka.sh && exec java -jar /app/movie-service.jar"]
+    ports:
+      - "8100:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # ---------- Booking Service ----------
+  booking-service:
+    image: yourorg/booking-service:latest
+    build: ./booking-service
+    environment:
+      - SPRING_APPLICATION_NAME=booking-service
+      - SPRING_CLOUD_CONFIG_URI=http://config-server:8888
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery:8761/eureka/
+      - SPRING_DATA_MONGODB_URI=mongodb://mongo:27017/bookingsdb
+      # Booking client credentials — we'll inject via Docker secret (see secrets below)
+      - BOOKING_CLIENT_ID=booking-service
+      - BOOKING_CLIENT_SECRET_FILE=/run/secrets/booking_client_secret
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=cinema
+    depends_on:
+      - keycloak
+      - discovery
+      - config-server
+      - mongo
+    secrets:
+      - booking_client_secret
+    volumes:
+      - ./entrypoints:/opt/entrypoints:ro
+    entrypoint: ["/bin/sh","-c","/opt/entrypoints/wait-for-keycloak-mongo-config-eureka.sh && exec java -jar /app/booking-service.jar"]
+    ports:
+      - "8200:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/actuator/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  keycloak_data:
+  mongo_data:
+
+secrets:
+  booking_client_secret:
+    file: ./secrets/booking_client_secret.txt
